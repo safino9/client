@@ -44,6 +44,7 @@ type prefetchRequest struct {
 	prefetchStatus PrefetchStatus
 	action         BlockRequestAction
 	sendCh         chan<- <-chan struct{}
+	statusCh       chan<- PrefetchByteStatus
 }
 
 type ctxPrefetcherTagKey int
@@ -57,12 +58,9 @@ const (
 )
 
 type prefetch struct {
-	subtreeBlockCount   int
-	subtreeBytesFetched uint64
-	subtreeBytesTotal   uint64
-	start               time.Time
-	subtreeTriggered    bool
-	req                 *prefetchRequest
+	subtreeBlockCount int
+	subtreeTriggered  bool
+	req               *prefetchRequest
 	// Each refnonce for this block ID can have a different set of
 	// parents.  Track the channel for the specific instance of the
 	// prefetch that counted us in its progress (since a parent may be
@@ -71,6 +69,8 @@ type prefetch struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	waitCh  chan struct{}
+
+	PrefetchByteStatus
 }
 
 func (p *prefetch) Close() {
@@ -170,14 +170,16 @@ func (p *blockPrefetcher) newPrefetch(
 		ctx, ctxPrefetchIDKey, ctxPrefetchID, p.log)
 	return &prefetch{
 		subtreeBlockCount: count,
-		subtreeBytesTotal: bytes,
-		start:             p.config.Clock().Now(),
 		subtreeTriggered:  triggered,
 		req:               req,
 		parents:           make(map[kbfsblock.RefNonce]map[BlockPointer]<-chan struct{}),
 		ctx:               ctx,
 		cancel:            cancel,
 		waitCh:            make(chan struct{}),
+		PrefetchByteStatus: PrefetchByteStatus{
+			SubtreeBytesTotal: bytes,
+			Start:             p.config.Clock().Now(),
+		},
 	}
 }
 
@@ -282,7 +284,7 @@ func (p *blockPrefetcher) completePrefetch(
 	numBlocks int, numBytes uint64) func(kbfsblock.ID, *prefetch) {
 	return func(blockID kbfsblock.ID, pp *prefetch) {
 		pp.subtreeBlockCount -= numBlocks
-		pp.subtreeBytesFetched += numBytes
+		pp.SubtreeBytesFetched += numBytes
 		if pp.subtreeBlockCount < 0 {
 			// Both log and panic so that we get the PFID in the log.
 			p.log.CErrorf(pp.ctx, "panic: completePrefetch overstepped its "+
@@ -295,9 +297,9 @@ func (p *blockPrefetcher) completePrefetch(
 			panic("completePrefetch got a nil req")
 		}
 		if pp.subtreeBlockCount == 0 {
-			if pp.subtreeBytesFetched != pp.subtreeBytesTotal {
+			if pp.SubtreeBytesFetched != pp.SubtreeBytesTotal {
 				panic(fmt.Sprintf("Bytes fetch mismatch: fetched=%d, total=%d",
-					pp.subtreeBytesFetched, pp.subtreeBytesTotal))
+					pp.SubtreeBytesFetched, pp.SubtreeBytesTotal))
 			}
 			delete(p.prefetches, blockID)
 			p.clearRescheduleState(blockID)
@@ -335,12 +337,12 @@ func (p *blockPrefetcher) decrementPrefetch(blockID kbfsblock.ID, pp *prefetch) 
 func (p *blockPrefetcher) addFetchedBytes(bytes uint64) func(
 	kbfsblock.ID, *prefetch) {
 	return func(blockID kbfsblock.ID, pp *prefetch) {
-		pp.subtreeBytesFetched += bytes
-		if pp.subtreeBytesFetched > pp.subtreeBytesTotal {
+		pp.SubtreeBytesFetched += bytes
+		if pp.SubtreeBytesFetched > pp.SubtreeBytesTotal {
 			// Both log and panic so that we get the PFID in the log.
 			p.log.CErrorf(pp.ctx, "panic: addFetchedBytes overstepped "+
-				"its bounds (fetched=%d, total=%d)", pp.subtreeBytesFetched,
-				pp.subtreeBytesTotal)
+				"its bounds (fetched=%d, total=%d)", pp.SubtreeBytesFetched,
+				pp.SubtreeBytesTotal)
 			panic("addFetchedBytes overstepped its bounds")
 		}
 	}
@@ -421,8 +423,8 @@ func (p *blockPrefetcher) request(ctx context.Context, priority int,
 		// If the block isn't in the tree, we add it with a block count of 1 (a
 		// later TriggerPrefetch will come in and decrement it).
 		req := &prefetchRequest{
-			ptr, info.EncodedSize, block.NewEmptier(), kmd, priority, lifetime,
-			NoPrefetch, action, nil}
+			ptr, info.EncodedSize, block.NewEmptier(), kmd, priority,
+			lifetime, NoPrefetch, action, nil, nil}
 		pre = p.newPrefetch(1, uint64(info.EncodedSize), false, req)
 		p.prefetches[ptr.ID] = pre
 	}
@@ -460,8 +462,8 @@ func (p *blockPrefetcher) request(ctx context.Context, priority int,
 		}
 		pre.parents[ptr.RefNonce][parentPtr] = parentPre.waitCh
 		p.log.CDebugf(ctx, "%d blocks to prefetch %t", pre.subtreeBlockCount, isParentNew)
-		return pre.subtreeBlockCount, pre.subtreeBytesFetched,
-			pre.subtreeBytesTotal
+		return pre.subtreeBlockCount, pre.SubtreeBytesFetched,
+			pre.SubtreeBytesTotal
 	}
 	return 0, 0, 0
 }
@@ -783,16 +785,24 @@ func (p *blockPrefetcher) run(testSyncCh <-chan struct{}) {
 
 			p.clearRescheduleState(req.ptr.ID)
 
-			// If this request is just asking for the wait channel,
-			// send it now.  (This is processed in the same queue as
-			// the prefetch requests, to guarantee an initial prefetch
-			// request has always been processed before the wait
-			// channel request is processed.)
+			// If this request is just asking for the wait channel or
+			// byte status, send it now.  (This is processed in the
+			// same queue as the prefetch requests, to guarantee an
+			// initial prefetch request has always been processed
+			// before the wait channel request is processed.)
 			if req.sendCh != nil {
 				if !isPrefetchWaiting {
 					req.sendCh <- p.closedCh
 				} else {
 					req.sendCh <- pre.waitCh
+				}
+				continue
+			}
+			if req.statusCh != nil {
+				if !isPrefetchWaiting {
+					req.statusCh <- PrefetchByteStatus{}
+				} else {
+					req.statusCh <- pre.PrefetchByteStatus
 				}
 				continue
 			}
@@ -836,7 +846,7 @@ func (p *blockPrefetcher) run(testSyncCh <-chan struct{}) {
 					p.applyToParentsRecursive(
 						p.completePrefetch(
 							pre.subtreeBlockCount,
-							pre.subtreeBytesTotal-pre.subtreeBytesFetched),
+							pre.SubtreeBytesTotal-pre.SubtreeBytesFetched),
 						req.ptr.ID, pre)
 				} else {
 					p.log.CDebugf(ctx, "skipping prefetch for finished block "+
@@ -1011,13 +1021,13 @@ func (p *blockPrefetcher) run(testSyncCh <-chan struct{}) {
 			}
 			p.log.CDebugf(ctx, "prefetching %d block(s) with parent block %s "+
 				"[bytesFetched=%d, bytesTotal=%d]",
-				numBlocks, numBytesFetched, numBytesTotal, req.ptr.ID)
+				numBlocks, req.ptr.ID, numBytesFetched, numBytesTotal)
 			// Walk up the block tree and add numBlocks to every parent,
 			// starting with this block.
 			p.applyToParentsRecursive(func(blockID kbfsblock.ID, pp *prefetch) {
 				pp.subtreeBlockCount += numBlocks
-				pp.subtreeBytesFetched += numBytesFetched
-				pp.subtreeBytesTotal += numBytesTotal
+				pp.SubtreeBytesFetched += numBytesFetched
+				pp.SubtreeBytesTotal += numBytesTotal
 			}, req.ptr.ID, pre)
 		case <-p.almostDoneCh:
 			p.log.CDebugf(p.ctx, "starting shutdown")
@@ -1060,7 +1070,7 @@ func (p *blockPrefetcher) ProcessBlockForPrefetch(ctx context.Context,
 	action BlockRequestAction) {
 	req := &prefetchRequest{
 		ptr, block.GetEncodedSize(), block.NewEmptier(), kmd, priority,
-		lifetime, prefetchStatus, action, nil}
+		lifetime, prefetchStatus, action, nil, nil}
 	if prefetchStatus == FinishedPrefetch {
 		// Finished prefetches can always be short circuited.
 		// If we're here, then FinishedPrefetch is already cached.
@@ -1095,7 +1105,7 @@ func (p *blockPrefetcher) WaitChannelForBlockPrefetch(
 	waitCh <-chan struct{}, err error) {
 	c := make(chan (<-chan struct{}), 1)
 	req := &prefetchRequest{
-		ptr, 0, nil, nil, 0, TransientEntry, 0, BlockRequestSolo, c}
+		ptr, 0, nil, nil, 0, TransientEntry, 0, BlockRequestSolo, c, nil}
 
 	select {
 	case p.prefetchRequestCh.In() <- req:
@@ -1112,6 +1122,32 @@ func (p *blockPrefetcher) WaitChannelForBlockPrefetch(
 		return nil, errors.New("Already shut down")
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	}
+}
+
+// Status implements the Prefetcher interface for
+// blockPrefetcher.
+func (p *blockPrefetcher) Status(ctx context.Context, ptr BlockPointer) (
+	PrefetchByteStatus, error) {
+	c := make(chan PrefetchByteStatus, 1)
+	req := &prefetchRequest{
+		ptr, 0, nil, nil, 0, TransientEntry, 0, BlockRequestSolo, nil, c}
+
+	select {
+	case p.prefetchRequestCh.In() <- req:
+	case <-p.shutdownCh:
+		return PrefetchByteStatus{}, errors.New("Already shut down")
+	case <-ctx.Done():
+		return PrefetchByteStatus{}, ctx.Err()
+	}
+	// Wait for response.
+	select {
+	case status := <-c:
+		return status, nil
+	case <-p.shutdownCh:
+		return PrefetchByteStatus{}, errors.New("Already shut down")
+	case <-ctx.Done():
+		return PrefetchByteStatus{}, ctx.Err()
 	}
 }
 
