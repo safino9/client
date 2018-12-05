@@ -279,8 +279,10 @@ func (p *blockPrefetcher) applyToParentsRecursive(
 	f(blockID, pre)
 }
 
-// Walk up the block tree decrementing each node by `numBlocks`. Any zeroes we
-// hit get marked complete and deleted.
+// Walk up the block tree decrementing each node by `numBlocks`. Any
+// zeroes we hit get marked complete and deleted.  Also, count
+// `numBytes` bytes as being fetched.  If the block count becomes 0,
+// then the total number of bytes must now be fetched.
 // TODO: If we ever hit a lower number than the child, panic.
 func (p *blockPrefetcher) completePrefetch(
 	numBlocks int, numBytes uint64) func(kbfsblock.ID, *prefetch) {
@@ -1120,6 +1122,8 @@ func (p *blockPrefetcher) ProcessBlockForPrefetch(ctx context.Context,
 	p.triggerPrefetch(req)
 }
 
+var errPrefetcherAlreadyShutDown = errors.New("Already shut down")
+
 // WaitChannelForBlockPrefetch implements the Prefetcher interface for
 // blockPrefetcher.
 func (p *blockPrefetcher) WaitChannelForBlockPrefetch(
@@ -1132,7 +1136,7 @@ func (p *blockPrefetcher) WaitChannelForBlockPrefetch(
 	select {
 	case p.prefetchRequestCh.In() <- req:
 	case <-p.shutdownCh:
-		return nil, errors.New("Already shut down")
+		return nil, errPrefetcherAlreadyShutDown
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -1141,7 +1145,7 @@ func (p *blockPrefetcher) WaitChannelForBlockPrefetch(
 	case waitCh := <-c:
 		return waitCh, nil
 	case <-p.shutdownCh:
-		return nil, errors.New("Already shut down")
+		return nil, errPrefetcherAlreadyShutDown
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -1157,7 +1161,7 @@ func (p *blockPrefetcher) Status(ctx context.Context, ptr BlockPointer) (
 	select {
 	case p.prefetchStatusCh.In() <- req:
 	case <-p.shutdownCh:
-		return PrefetchProgress{}, errors.New("Already shut down")
+		return PrefetchProgress{}, errPrefetcherAlreadyShutDown
 	case <-ctx.Done():
 		return PrefetchProgress{}, ctx.Err()
 	}
@@ -1166,7 +1170,7 @@ func (p *blockPrefetcher) Status(ctx context.Context, ptr BlockPointer) (
 	case status := <-c:
 		return status, nil
 	case <-p.shutdownCh:
-		return PrefetchProgress{}, errors.New("Already shut down")
+		return PrefetchProgress{}, errPrefetcherAlreadyShutDown
 	case <-ctx.Done():
 		return PrefetchProgress{}, ctx.Err()
 	}
