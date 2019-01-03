@@ -32,14 +32,26 @@ func IsUserSystemdRunning() bool {
 	// Ignore non-zero-exit-status errors, because of "degraded" below.
 	_, isExitError := err.(*exec.ExitError)
 	if err != nil && !isExitError {
-		os.Stderr.WriteString(fmt.Sprintf("Failed to run systemctl: %s\n", err))
+		os.Stderr.WriteString(fmt.Sprintf("Failed to run systemctl: check user manager status: %s\n", err))
 		return false
 	}
 	outputStr := strings.TrimSpace(string(output))
+
+	dbusStatusCmd := exec.Command("systemctl", "--user", "is-active", "dbus.service")
+	dbusStatusOutput, err := dbusStatusCmd.Output()
+	// Ignore non-zero-exit-status errors, because dbus isn't necessarily
+	// required since it starts up on-demand if needed
+	_, isExitError = err.(*exec.ExitError)
+	if err != nil && !isExitError {
+		os.Stderr.WriteString(fmt.Sprintf("Failed to run systemctl: check dbus activity: %s\n", err))
+		return false
+	}
+	dbusStatusOutputStr := strings.TrimSpace(string(dbusStatusOutput))
+
 	// "degraded" just means that some service has failed to start. That could
 	// be a totally unrelated application on the user's machine, so we treat it
-	// the same as "running".
-	if outputStr == "running" || outputStr == "degraded" {
+	// the same as "running", but enforce that dbus is running as well.
+	if outputStr == "running" || (outputStr == "degraded" && dbusStatusOutputStr == "active") {
 		return true
 	} else if outputStr == "" {
 		os.Stderr.WriteString(fmt.Sprintf("Failed to reach user-level systemd daemon.\n"))
