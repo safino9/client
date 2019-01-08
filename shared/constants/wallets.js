@@ -450,7 +450,6 @@ const createNewAccountWaitingKey = 'wallets:createNewAccount'
 const changeDisplayCurrencyWaitingKey = 'wallets:changeDisplayCurrency'
 const getDisplayCurrencyWaitingKey = (id: Types.AccountID) => `wallets:getDisplayCurrency:${id}`
 const linkExistingWaitingKey = 'wallets:linkExisting'
-const loadEverythingWaitingKey = 'wallets:loadEverything'
 const buildPaymentWaitingKey = 'wallets:buildPayment'
 const sendPaymentWaitingKey = 'wallets:stellarSend'
 const requestPaymentWaitingKey = 'wallets:requestPayment'
@@ -458,6 +457,7 @@ const setAccountAsDefaultWaitingKey = 'wallets:setAccountAsDefault'
 const deleteAccountWaitingKey = 'wallets:deleteAccount'
 const searchKey = 'walletSearch'
 const loadAccountWaitingKey = (id: Types.AccountID) => `wallets:loadAccount:${id}`
+const loadAccountsWaitingKey = 'wallets:loadAccounts'
 const cancelPaymentWaitingKey = (id: Types.PaymentID) =>
   `wallets:cancelPayment:${Types.paymentIDToString(id)}`
 const validateAccountNameWaitingKey = 'wallets:validateAccountName'
@@ -600,7 +600,7 @@ export {
   isPaymentUnread,
   linkExistingWaitingKey,
   loadAccountWaitingKey,
-  loadEverythingWaitingKey,
+  loadAccountsWaitingKey,
   makeAccount,
   makeAssetDescription,
   makeAssets,
