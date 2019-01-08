@@ -520,10 +520,29 @@ func (e *Env) GetUseRootConfigFile() bool {
 	return e.GetBool(false, e.cmd.GetUseRootConfigFile)
 }
 
+func (e *Env) GetRootRedirectorMount() string {
+	return "/keybase"
+}
+
+func (e *Env) GetRootConfigDirectory() string {
+	// NOTE: If this ever changes to more than one level deep, the configure
+	// redirector CLI command needs to be updated to update the permissions
+	// back to 0644 for all the created directories, or other processes won't
+	// be able to read them.
+	// Alternatively, we could package a blank config.json in that directory,
+	// but we can't rely on that for other packages.
+	switch RuntimeGroup() {
+	case keybase1.RuntimeGroup_UNIXLIKE:
+		return "/etc/keybase/"
+	default:
+		return ""
+	}
+}
+
 func (e *Env) GetRootConfigFilename() string {
 	switch RuntimeGroup() {
 	case keybase1.RuntimeGroup_UNIXLIKE:
-		return "/etc/keybase/config.json"
+		return filepath.Join(e.GetRootConfigDirectory(), "config.json")
 	default:
 		return ""
 	}
