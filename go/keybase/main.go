@@ -134,6 +134,36 @@ func checkSystemUser(log logger.Logger) {
 	}
 }
 
+func osPreconfigure(g *libkb.GlobalContext) {
+	switch libkb.RuntimeGroup() {
+	case keybase1.RuntimeGroup_UNIXLIKE:
+		configReader := g.Env.GetConfig()
+		if configReader == nil {
+			// some commands don't configure config
+			return
+		}
+		userMountdir := configReader.GetMountDir()
+		userMountdirDefault := configReader.GetMountDirDefault()
+
+		oldMountdirDefault := g.Env.GetOldMountDirDefault()
+		mountdirDefault := g.Env.GetMountDirDefault()
+
+		nonexistentMountdir := userMountdir == ""
+		usingOldMountdirByDefault := userMountdir == oldMountdirDefault && (userMountdirDefault == oldMountdirDefault || userMountdirDefault == "")
+
+		if nonexistentMountdir || usingOldMountdirByDefault {
+			configWriter := g.Env.GetConfigWriter()
+			if configWriter == nil {
+				// some commands don't configure config
+				return
+			}
+			configWriter.SetStringAtPath("mountdir", mountdirDefault)
+			configWriter.SetStringAtPath("mountdirdefault", mountdirDefault)
+		}
+	default:
+	}
+}
+
 func mainInner(g *libkb.GlobalContext, startupErrors []error) error {
 	cl := libcmdline.NewCommandLine(true, client.GetExtraFlags())
 	cl.AddCommands(client.GetCommands(cl, g))
@@ -178,6 +208,11 @@ func mainInner(g *libkb.GlobalContext, startupErrors []error) error {
 	warnNonProd(g.Log, g.Env)
 	logStartupIssues(startupErrors, g.Log)
 	tryToDisableProcessTracing(g.Log, g.Env)
+
+	// Don't configure mountdir on a nofork command like nix configure redirector.
+	if cl.GetForkCmd() != libcmdline.NoFork {
+		osPreconfigure(g)
+	}
 
 	if err := configOtherLibraries(g); err != nil {
 		return err
