@@ -4,7 +4,6 @@
 package service
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/keybase/client/go/avatars"
@@ -371,6 +370,5 @@ func (h *UserHandler) LoadHasRandomPw(ctx context.Context, sessionID int) (res b
 		SessionType: libkb.APISessionTypeREQUIRED,
 		NetContext:  ctx,
 	}, &ret)
-	//return ret.RandomPW, err
-	return ret.RandomPW, errors.New("test has_random_pw error")
+	return ret.RandomPW, err
 }
