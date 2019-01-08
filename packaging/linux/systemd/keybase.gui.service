@@ -1,18 +1,27 @@
 [Unit]
 Description=Keybase GUI
+# Do not issue a hard dependency on service, because
+# gui can reconnect to a restarted service.
 Wants=keybase.service kbfs.service
 
 [Service]
 Type=simple
+EnvironmentFile=-%t/keybase/keybase.env
+EnvironmentFile=-%E/keybase/keybase.env
 ExecStart=/opt/keybase/Keybase
-# The environment file lets run_keybase pass along KEYBASE_START_UI. The
-# autostart file will set that to suppress showing the main window during boot.
-# %t is the XDG_RUNTIME_DIR, and the leading - means it's ok if the file is
-# missing.
-EnvironmentFile=-%t/keybase/keybase.gui.env
+
+# After starting, we clear the KEYBASE_AUTOSTART variable so the next time
+# systemctl --start keybase.gui is called, it will be maximized.
+# Autostart scripts must set KEYBASE_AUTOSTART=1 in the systemd
+# environment on every call in order to start the gui in a minimized state.
+# The official Linux packages use run_keybase, which imports the
+# environment variable into systemd during autostart.
+# We need to shell out because systemctl is sometimes in /bin and sometimes in
+# /usr/bin depending on the distro
+ExecStartPost=/usr/bin/env systemctl --user unset-environment KEYBASE_AUTOSTART
 
 # We don't set Restart=, since a GUI crash is probably visible to the user.
 
 # We don't have an [Install] section, since the app is intended to be started
-# from ~/.config/autostart. Running it in e.g. an SSH session is unlikely to be
-# correct.
+# from ~/.config/autostart (or the user's window manager's autostart
+# configuration). Enabling it in e.g. an SSH session is unlikely to be correct.

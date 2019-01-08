@@ -152,6 +152,12 @@ build_one_architecture() {
   mkdir -p "$units_dir"
   cp "$here/systemd"/* "$this_repo/go/kbfs/packaging/linux/systemd"/* "$units_dir"
 
+  # Copy in the systemd unit environment generators.
+  # https://www.freedesktop.org/software/systemd/man/systemd.environment-generator.html
+  unit_environs_dir="$layout_dir/usr/lib/systemd/user-environment-generators"
+  mkdir -p "$unit_environs_dir"
+  cp "$here/systemd-user-environment-generators"/* "$unit_environs_dir"
+
   # Check for whitespace in all the filenames we've copied. We don't support
   # whitespace in our later build scripts (for example RPM packaging), and even
   # if we did, it would be bad practice to use it.
