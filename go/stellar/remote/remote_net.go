@@ -109,3 +109,8 @@ func (r *RemoteNet) ServerTimeboundsRecommendation(ctx context.Context) (stellar
 func (r *RemoteNet) SetInflationDestination(ctx context.Context, signedTx string) error {
 	return SetInflationDestination(ctx, r.G(), signedTx)
 }
+
+func (r *RemoteNet) FetchSecretlessBundle(ctx context.Context) (*stellar1.Bundle, error) {
+	mctx := libkb.NewMetaContext(ctx, r.G())
+	return FetchSecretlessBundle(mctx)
+}

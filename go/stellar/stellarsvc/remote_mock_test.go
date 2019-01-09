@@ -515,6 +515,10 @@ func (r *RemoteClientMock) SetInflationDestination(ctx context.Context, signedTx
 	return r.Backend.SetInflationDestination(ctx, r.Tc, signedTx)
 }
 
+func (r *RemoteClientMock) FetchSecretlessBundle(ctx context.Context) (*stellar1.Bundle, error) {
+	return r.Backend.FetchSecretlessBundle(ctx, r.Tc)
+}
+
 var _ remote.Remoter = (*RemoteClientMock)(nil)
 
 const (
@@ -1149,6 +1153,12 @@ func (r *BackendMock) MakeAccountAllDevices(ctx context.Context, tc *TestContext
 func (r *BackendMock) ServerTimeboundsRecommendation(ctx context.Context, tc *TestContext) (stellar1.TimeboundsRecommendation, error) {
 	// Call real timebounds endpoint for integration testing.
 	return remote.ServerTimeboundsRecommendation(ctx, tc.G)
+}
+
+func (r *BackendMock) FetchSecretlessBundle(ctx context.Context, tc *TestContext) (*stellar1.Bundle, error) {
+	// Call real timebounds endpoint for integration testing.
+	mctx := libkb.NewMetaContext(ctx, tc.G)
+	return remote.FetchSecretlessBundle(mctx)
 }
 
 func (r *BackendMock) SetInflationDestination(ctx context.Context, tc *TestContext, signedTx string) error {
