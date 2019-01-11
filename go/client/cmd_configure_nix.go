@@ -96,9 +96,11 @@ func (v *CmdConfigureAutostart) GetUsage() libkb.Usage {
 
 type CmdConfigureRedirector struct {
 	libkb.Contextified
-	Toggle   bool
-	ToggleOn bool
-	Status   bool
+	ToggleOn            bool
+	Status              bool
+	RootRedirectorMount string
+	RootConfigFilename  string
+	RootConfigDirectory string
 }
 
 func NewCmdConfigureRedirector(cl *libcmdline.CommandLine, g *libkb.GlobalContext) cli.Command {
@@ -168,31 +170,171 @@ func (v *CmdConfigureRedirector) ParseArgv(ctx *cli.Context) error {
 	}
 	v.ToggleOn = toggleOn
 	v.Status = status
+
+	return nil
+}
+
+func (v *CmdConfigureRedirector) isRedirectorEnabled() (bool, error) {
+	config := v.G().Env.GetConfig()
+	if config == nil {
+		return false, fmt.Errorf("could not get config reader")
+	}
+
+	i, err := config.GetInterfaceAtPath(libkb.DisableRootRedirectorConfigKey)
+	if err != nil {
+		// Config key or file nonexistent, but possibly other errors as well
+		return true, nil
+	}
+	val, ok := i.(bool)
+	if !ok {
+		return false, fmt.Errorf("config corruption: not a boolean value; please delete the %s key in %s manually.",
+			libkb.DisableRootRedirectorConfigKey, v.RootConfigFilename)
+	}
+	return !val, nil
+}
+
+func redirectorPerm(toggleOn bool) uint32 {
+	if toggleOn {
+		// suid set; octal
+		return 04755
+	}
+	// suid unset; octal
+	return 0755
+}
+
+func (v *CmdConfigureRedirector) createMount() error {
+	rootMountPerm := os.FileMode(0755 | os.ModeDir)
+	mountedPerm := os.FileMode(0555 | os.ModeDir) // permissions different when mounted
+	fileInfo, err := os.Stat(v.RootRedirectorMount)
+	switch {
+	case os.IsNotExist(err):
+		err := os.Mkdir(v.RootRedirectorMount, rootMountPerm)
+		if err != nil {
+			v.G().Log.Errorf("Failed to create mountpoint at %s: %s", v.RootRedirectorMount, err)
+			v.G().Log.Errorf("If KBFS is not being used, run `# pkill -f keybase-redirector` and try again.")
+			return err
+		}
+		fmt.Println("Redirector mount created.")
+	case err == nil:
+		v.G().Log.Warning("Root mount already exists; will not re-create.")
+		if fileInfo.Mode() != rootMountPerm && fileInfo.Mode() != mountedPerm {
+			return fmt.Errorf("Root mount exists at %s, but has incorrect file mode %s. Delete %s and try again.",
+				v.RootRedirectorMount, fileInfo.Mode(), v.RootRedirectorMount)
+		}
+		dir, err := os.Open(v.RootRedirectorMount)
+		if err != nil {
+			return fmt.Errorf("Root mount exists at %s, but failed to open: %s. Delete %s and try again.", v.RootRedirectorMount, err, v.RootRedirectorMount)
+		}
+		defer dir.Close()
+		_, err = dir.Readdir(1)
+		switch err {
+		case io.EOF:
+			// doesn't fall-through
+		case nil:
+			return fmt.Errorf("Root mount exists at %s, but is non-empty (is the redirector currently running?). Run `# pkill -f keybase-redirector`, delete directory %s and try again.", v.RootRedirectorMount, v.RootRedirectorMount)
+		default:
+			return fmt.Errorf("Unexpected error while reading %s: %s", v.RootRedirectorMount, err)
+		}
+	default:
+		v.G().Log.Errorf("Unexpected error while trying to stat mount: %s", err)
+		return err
+	}
+	return nil
+}
+
+func (v *CmdConfigureRedirector) deleteMount() error {
+	err := os.Remove(v.RootRedirectorMount)
+	switch {
+	case os.IsNotExist(err):
+		v.G().Log.Warning("Root mountdir already nonexistent.")
+	case err == nil:
+		fmt.Println("Redirector mount deletion successful.")
+	default:
+		v.G().Log.Errorf("Failed to delete mountpoint at %s: %s", v.RootRedirectorMount, err)
+		v.G().Log.Errorf("If KBFS is not being used, run `# pkill -f keybase-redirector`, delete %s and try again.", v.RootRedirectorMount)
+		return err
+	}
+	return nil
+}
+
+func (v *CmdConfigureRedirector) tryAtomicallySetConfigAndChmodRedirector(originallyEnabled bool) error {
+	configWriter := v.G().Env.GetConfigWriter()
+	if configWriter == nil {
+		return fmt.Errorf("could not get config writer")
+	}
+
+	// By default, writing a config file uses libkb.FilePerm which is only readable by the creator.
+	// Since we're writing to the root config file, re-allow other users to read it.
+	defer func() {
+		os.Chmod(v.RootConfigDirectory, 0755|os.ModeDir)
+		os.Chmod(v.RootConfigFilename, 0644)
+	}()
+
+	err := configWriter.SetBoolAtPath(libkb.DisableRootRedirectorConfigKey, !v.ToggleOn)
+	if err != nil {
+		v.G().Log.Errorf("Failed to write to %s. Do you have root privileges?", v.RootConfigFilename)
+		return err
+	}
+
+	redirectorPath, err := exec.LookPath("keybase-redirector")
+	if err != nil {
+		v.G().Log.Warning("configuration successful, but keybase-redirector not found in $PATH (it may not be installed), so not updating permissions.")
+		return nil
+	}
+
+	// os.Chmod doesn't work with suid bit, so use syscall
+	err = syscall.Chmod(redirectorPath, redirectorPerm(v.ToggleOn))
+	if err != nil {
+		// If flipping bit, attempt to restore old config value to maintain consistency between config and redirector mode
+		if originallyEnabled != v.ToggleOn {
+			configErr := configWriter.SetBoolAtPath(libkb.DisableRootRedirectorConfigKey, !originallyEnabled)
+			if configErr != nil {
+				v.G().Log.Errorf("Failed to revert config after chmod failure; config may be in inconsistent state.")
+				return fmt.Errorf("Error during chmod: %s. Error during config revert: %s.", err, configErr)
+			}
+		}
+
+		return err
+	}
+
+	return nil
+}
+
+func (v *CmdConfigureRedirector) configureEnv() error {
+	rootRedirectorMount, err := v.G().Env.GetRootRedirectorMount()
+	if err != nil {
+		return err
+	}
+	v.RootRedirectorMount = rootRedirectorMount
+
+	rootConfigFilename, err := v.G().Env.GetRootConfigFilename()
+	if err != nil {
+		return err
+	}
+	v.RootConfigFilename = rootConfigFilename
+
+	if v.RootConfigFilename != v.G().Env.GetConfigFilename() {
+		return fmt.Errorf("Must specify --use-root-config-file to `keybase`.")
+	}
 	return nil
 }
 
 func (v *CmdConfigureRedirector) Run() error {
-	if v.G().Env.GetConfigFilename() != v.G().Env.GetRootConfigFilename() {
-		return fmt.Errorf("Must pass --use-root-config-file to keybase.")
-	}
-	if v.G().Env.GetConfigFilename() == "" {
-		return fmt.Errorf("Root config file nonexistent for this operating system.")
-	}
-
-	enabled := false
-
-	config := v.G().Env.GetConfig()
-	configWriter := v.G().Env.GetConfigWriter()
-
-	i, err := config.GetInterfaceAtPath(libkb.DisableRootRedirectorConfigKey)
+	// Don't do this setup in ParseArgv because environment variables have not
+	// yet been populated then
+	err := v.configureEnv()
 	if err != nil {
-		enabled = true
-	} else {
-		val, ok := i.(bool)
-		if !ok {
-			return fmt.Errorf("config corruption: not a boolean value; please edit %s and set %s to a boolean value manually.", v.G().Env.GetRootConfigFilename(), libkb.DisableRootRedirectorConfigKey)
-		}
-		enabled = !val
+		return err
+	}
+
+	rootConfigDirectory, err := v.G().Env.GetRootConfigDirectory()
+	if err != nil {
+		return err
+	}
+	v.RootConfigDirectory = rootConfigDirectory
+	enabled, err := v.isRedirectorEnabled()
+	if err != nil {
+		return err
 	}
 
 	if v.Status {
@@ -202,99 +344,26 @@ func (v *CmdConfigureRedirector) Run() error {
 			fmt.Println("disabled")
 		}
 		return nil
-	}
-
-	// By default, writing a config file uses libkb.FilePerm which is only readable by the creator.
-	// Since we're writing to the root config file, re-allow other users to read it.
-	defer syscall.Chmod(v.G().Env.GetRootConfigDirectory(), 0755)
-	defer syscall.Chmod(v.G().Env.GetRootConfigFilename(), 0644)
-	err = configWriter.SetBoolAtPath(libkb.DisableRootRedirectorConfigKey, !v.ToggleOn)
-	if err != nil {
-		return err
-	}
-
-	redirectorPath, err := exec.LookPath("keybase-redirector")
-	if err != nil {
-		// could not find redirector
-		v.G().Log.Warning("configuration successful, but keybase-redirector not found in $PATH (it may not be installed), so not updating permissions.")
-		return nil
-	}
-	var redirectorPerm uint32
-	if v.ToggleOn {
-		// suid set, octal
-		redirectorPerm = 04755
 	} else {
-		// suid unset, octal
-		redirectorPerm = 0755
-	}
-	// os.Chmod doesn't work with suid bit, so use syscall
-	err = syscall.Chmod(redirectorPath, redirectorPerm)
-	if err != nil {
-		v.G().Log.Errorf("Failed to chmod %s. Do you have root privileges?", redirectorPath)
-
-		// Attempt to restore old config value
-		configErr := configWriter.SetBoolAtPath(libkb.DisableRootRedirectorConfigKey, !enabled)
-		if configErr != nil {
-			v.G().Log.Errorf("Failed to revert config after chmod failure; config may be in inconsistent state.")
-			return fmt.Errorf("Error during chmod: %s. Error during config revert: %s.", err, configErr)
+		err := v.tryAtomicallySetConfigAndChmodRedirector(enabled)
+		if err != nil {
+			return err
 		}
+		fmt.Println("Redirector configuration updated.")
 
-		return err
-	}
-
-	fmt.Println("Redirector configuration and permissions updated.")
-
-	rootMount := v.G().Env.GetRootRedirectorMount()
-	rootMountPerm := os.FileMode(0755 | os.ModeDir)
-	// permissions different when mounted
-	mountedPerm := os.FileMode(0555 | os.ModeDir)
-	if v.ToggleOn {
-		fileInfo, err := os.Stat(rootMount)
-		if err == nil {
-			v.G().Log.Warning("Root mount already exists; will not re-create.")
-			if fileInfo.Mode() != rootMountPerm && fileInfo.Mode() != mountedPerm {
-				return fmt.Errorf("Root mount exists at %s, but has incorrect file mode %s. Delete directory %s and try again.",
-					rootMount, fileInfo.Mode(), rootMount)
-			}
-			dir, err := os.Open(rootMount)
+		if v.ToggleOn {
+			err := v.createMount()
 			if err != nil {
-				return fmt.Errorf("Root mount exists at %s, but failed to open. Delete directory %s and try again.", rootMount, rootMount)
-			}
-			defer dir.Close()
-			_, err = dir.Readdir(1)
-			if err != io.EOF {
-				return fmt.Errorf("Root mount exists at %s, but is non-empty (is the redirector currently running?). Run `# pkill -f keybase-redirector`, delete directory %s and try again.", rootMount, rootMount)
-			}
-		} else if os.IsNotExist(err) {
-			err := os.Mkdir(rootMount, rootMountPerm)
-			if err != nil {
-				v.G().Log.Errorf("Failed to create mountpoint at %s: %s", rootMount, err)
-				v.G().Log.Errorf("If KBFS is not being used, run `# pkill -f keybase-redirector` and try again.")
 				return err
 			}
-			fmt.Println("Redirector mount creation successful.")
+			fmt.Println("Please run `$ run_keybase` to start the redirector for each user using KBFS.")
 		} else {
-			v.G().Log.Warning(fmt.Sprintf("Unexpected error while trying to stat mount: %s", err))
-			return err
+			err := v.deleteMount()
+			if err != nil {
+				return err
+			}
+			fmt.Println("Please run `# pkill -f keybase-redirector` to stop the redirector for all users.")
 		}
-
-	} else {
-		err := os.Remove(rootMount)
-		if os.IsNotExist(err) {
-			v.G().Log.Warning("Root mountdir already nonexistent.")
-		} else if err != nil {
-			v.G().Log.Errorf("Failed to delete mountpoint at %s: %s", rootMount, err)
-			v.G().Log.Errorf("If KBFS is not being used, run `# pkill -f keybase-redirector` and try again.")
-			return err
-		} else {
-			fmt.Println("Redirector mount deletion successful.")
-		}
-	}
-
-	if v.ToggleOn {
-		fmt.Println("Please run `$ run_keybase` to start the redirector for each user using KBFS.")
-	} else {
-		fmt.Println("Please run `# pkill -f keybase-redirector` to stop the redirector for all users.")
 	}
 
 	return nil

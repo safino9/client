@@ -520,11 +520,17 @@ func (e *Env) GetUseRootConfigFile() bool {
 	return e.GetBool(false, e.cmd.GetUseRootConfigFile)
 }
 
-func (e *Env) GetRootRedirectorMount() string {
-	return "/keybase"
+func (e *Env) GetRootRedirectorMount() (string, error) {
+	switch RuntimeGroup() {
+	case keybase1.RuntimeGroup_UNIXLIKE, keybase1.RuntimeGroup_DARWINLIKE:
+		return "/keybase", nil
+	default:
+		// By default K:/ on Windows, but could be different, so don't specify.
+		return "", fmt.Errorf("Root redirector mount unknown on this system.")
+	}
 }
 
-func (e *Env) GetRootConfigDirectory() string {
+func (e *Env) GetRootConfigDirectory() (string, error) {
 	// NOTE: If this ever changes to more than one level deep, the configure
 	// redirector CLI command needs to be updated to update the permissions
 	// back to 0644 for all the created directories, or other processes won't
@@ -533,26 +539,29 @@ func (e *Env) GetRootConfigDirectory() string {
 	// but we can't rely on that for other packages.
 	switch RuntimeGroup() {
 	case keybase1.RuntimeGroup_UNIXLIKE:
-		return "/etc/keybase/"
+		return "/etc/keybase/", nil
 	default:
-		return ""
+		return "", fmt.Errorf("Root config directory unknown on this system")
 	}
 }
 
-func (e *Env) GetRootConfigFilename() string {
-	switch RuntimeGroup() {
-	case keybase1.RuntimeGroup_UNIXLIKE:
-		return filepath.Join(e.GetRootConfigDirectory(), "config.json")
-	default:
-		return ""
+func (e *Env) GetRootConfigFilename() (string, error) {
+	dir, err := e.GetRootConfigDirectory()
+	if err != nil {
+		return "", err
 	}
+	return filepath.Join(dir, "config.json"), nil
 }
 
 func (e *Env) GetConfigFilename() string {
 	return e.GetString(
 		func() string {
 			if e.GetUseRootConfigFile() {
-				return e.GetRootConfigFilename()
+				ret, err := e.GetRootConfigFilename()
+				if err != nil {
+					return ""
+				}
+				return ret
 			}
 			return ""
 		},
