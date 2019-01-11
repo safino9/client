@@ -476,13 +476,11 @@ const getPayment = (state: TypedState, accountID: Types.AccountID, paymentID: Ty
 
 const getAccountInner = (state: Types.State, accountID: Types.AccountID) =>
   state.accountMap.get(accountID, unknownAccount)
-
 const getAccount = (state: TypedState, accountID: Types.AccountID) =>
   getAccountInner(state.wallets, accountID)
 
 const getDisplayCurrencyInner = (state: Types.State, accountID: Types.AccountID) =>
   getAccountInner(state, accountID).displayCurrency
-
 const getDisplayCurrency = (state: TypedState, accountID: Types.AccountID) =>
   getDisplayCurrencyInner(state.wallets, accountID)
 
@@ -490,6 +488,7 @@ const getDefaultDisplayCurrencyInner = (state: Types.State) => {
   const defaultAccount = state.accountMap.find(a => a.isDefault)
   return defaultAccount ? defaultAccount.displayCurrency : unknownCurrency
 }
+const getDefaultDisplayCurrency = (state: TypedState) => getDefaultDisplayCurrencyInner(state.wallets)
 
 const getDefaultAccountID = (state: TypedState) => {
   const defaultAccount = state.wallets.accountMap.find(a => a.isDefault)
@@ -595,6 +594,7 @@ export {
   getDisplayCurrencyInner,
   getDisplayCurrencyWaitingKey,
   getDefaultAccountID,
+  getDefaultDisplayCurrency,
   getDefaultDisplayCurrencyInner,
   getFederatedAddress,
   getPayment,
