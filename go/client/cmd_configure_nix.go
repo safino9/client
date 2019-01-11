@@ -344,26 +344,26 @@ func (v *CmdConfigureRedirector) Run() error {
 			fmt.Println("disabled")
 		}
 		return nil
-	} else {
-		err := v.tryAtomicallySetConfigAndChmodRedirector(enabled)
+	}
+
+	err = v.tryAtomicallySetConfigAndChmodRedirector(enabled)
+	if err != nil {
+		return err
+	}
+	fmt.Println("Redirector configuration updated.")
+
+	if v.ToggleOn {
+		err := v.createMount()
 		if err != nil {
 			return err
 		}
-		fmt.Println("Redirector configuration updated.")
-
-		if v.ToggleOn {
-			err := v.createMount()
-			if err != nil {
-				return err
-			}
-			fmt.Println("Please run `$ run_keybase` to start the redirector for each user using KBFS.")
-		} else {
-			err := v.deleteMount()
-			if err != nil {
-				return err
-			}
-			fmt.Println("Please run `# pkill -f keybase-redirector` to stop the redirector for all users.")
+		fmt.Println("Please run `$ run_keybase` to start the redirector for each user using KBFS.")
+	} else {
+		err := v.deleteMount()
+		if err != nil {
+			return err
 		}
+		fmt.Println("Please run `# pkill -f keybase-redirector` to stop the redirector for all users.")
 	}
 
 	return nil
