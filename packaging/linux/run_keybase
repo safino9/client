@@ -47,7 +47,7 @@ write_startup_token() {
 
 systemd_stop_if_active() {
     service="$1";
-    if command -v systemctl &> /dev/null && systemctl --user is-active "$service"; then
+    if command -v systemctl &> /dev/null && systemctl --user is-active -q "$service"; then
         systemctl --user stop "$service"
     fi
 }
@@ -276,12 +276,12 @@ startup_all() {
 
 usage_1="Usage: run_keybase [-hgake]. Starts the Keybase service, KBFS, and the GUI."
 usage_2="Passing -h prints this help text."
-usage_2="Passing -g, or the environment variable KEYBASE_NO_GUI=1, causes the script to not start the gui."
-usage_3="Passing -a, or the environment variable KEYBASE_AUTOSTART=1, causes the GUI to stay minimized in system tray after startup."
-usage_4="Passing -k, or the environment variable KEYBASE_KILL=1, causes all Keybase services to shut down."
-usage_4="Passing -e prints the environment variables that would used by the systemd unit."
+usage_3="Passing -g, or the environment variable KEYBASE_NO_GUI=1, causes the script to not start the gui."
+usage_4="Passing -a, or the environment variable KEYBASE_AUTOSTART=1, causes the GUI to stay minimized in system tray after startup."
+usage_5="Passing -k, or the environment variable KEYBASE_KILL=1, causes all Keybase services to shut down."
+usage_6="Passing -e prints the environment variables that would used by the systemd unit."
 usage() {
-    printf "%s\n%s\n%s\n%s\n" "$usage_1" "$usage_2" "$usage_3" "$usage_4";
+    printf "%s\n%s\n%s\n%s\n%s\n%s\n" "$usage_1" "$usage_2" "$usage_3" "$usage_4" "$usage_5" "$usage_6";
 }
 
 KEYBASE_NO_GUI="${KEYBASE_NO_GUI:-0}"
